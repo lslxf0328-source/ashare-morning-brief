@@ -35,7 +35,7 @@ on:
     #   "15 * * * *"     → 每小时第15分钟 / minute 15 every hour
     #   "30 0-14 * * *"  → 北京时间 8:00-22:00 每小时第30分钟 / Beijing 8am-10pm
     #
-    - cron: "33 * * * *"
+    - cron: "0 0 * * *" # UTC 00:00 = 北京时间08:00，可能排队延迟
 
   workflow_dispatch:
 
@@ -132,6 +132,24 @@ jobs:
             echo "Error: Config missing"
             exit 1
           fi
+
+      - name: Validate morning briefing secrets
+        if: success()
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          WEWORK_WEBHOOK_URL: ${{ secrets.WEWORK_WEBHOOK_URL }}
+        run: |
+          python - <<'PYVALIDATE'
+          import os
+          from urllib.parse import urlparse, parse_qs
+          for name in ('AI_API_KEY', 'WEWORK_WEBHOOK_URL'):
+              if not os.environ.get(name, '').strip():
+                  raise SystemExit('Missing GitHub Secret: ' + name)
+          u = urlparse(os.environ['WEWORK_WEBHOOK_URL'].strip())
+          if u.scheme != 'https' or u.hostname != 'qyapi.weixin.qq.com' or u.path != '/cgi-bin/webhook/send' or not parse_qs(u.query).get('key'):
+              raise SystemExit('WEWORK_WEBHOOK_URL must be a complete WeCom group robot HTTPS webhook URL')
+          print('Required secrets are present; values are not printed.')
+          PYVALIDATE
 
       - name: Run crawler
         if: success()
