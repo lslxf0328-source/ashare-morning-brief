@@ -89,7 +89,9 @@ class AIClient:
                 params[key] = value
 
         # 调用 LiteLLM
+        params["extra_body"] = {"thinking": {"type": "disabled"}}
         response = completion(**params)
+        
 
         # 提取响应内容
         # 某些模型/提供商返回 list（内容块）而非 str，统一转为 str
