@@ -1,0 +1,62 @@
+name: A股 V1.2 技术扫描
+
+on:
+  workflow_dispatch:
+    inputs:
+      scan_date:
+        description: '目标收盘日 YYYY-MM-DD（留空使用北京时间今日）'
+        required: false
+        type: string
+        default: ''
+      limit:
+        description: '扫描股票数：100 首次试运行；0 全市场'
+        required: false
+        type: string
+        default: '100'
+  schedule:
+    # UTC 09:37 -> 北京时间周一至周五 17:37；法定休市日可能报无行情。
+    - cron: '37 9 * * 1-5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a-share-v12-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scanner_v12/requirements.txt
+      - name: Install scanner dependencies
+        run: python -m pip install -r scanner_v12/requirements.txt
+      - name: Test indicators
+        run: python -m unittest discover -s scanner_v12/tests -v
+      - name: Run independent stock scanner
+        shell: bash
+        env:
+          SCAN_DATE: ${{ inputs.scan_date }}
+          LIMIT: ${{ inputs.limit }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ -z "$SCAN_DATE" ]; then SCAN_DATE=$(TZ=Asia/Shanghai date +%F); fi
+          if [ "$EVENT_NAME" = "schedule" ]; then LIMIT=0; fi
+          if [ -z "$LIMIT" ]; then LIMIT=100; fi
+          python scanner_v12/scan.py --date "$SCAN_DATE" --limit "$LIMIT"
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-v12-${{ github.run_id }}
+          path: scanner_v12/output/
+          retention-days: 14
+          if-no-files-found: warn
