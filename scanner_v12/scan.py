@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
 from indicators import calc
+from position_risk import assess_position
 
 FIELDS = 'date,code,open,high,low,close,volume,amount,tradestatus,isST'
 BASE = Path(__file__).resolve().parent
@@ -65,13 +66,19 @@ def main():
                 hist=hist[hist['tradestatus']=='1'].copy()
                 signals=calc(hist)
                 if signals['收盘日期']!=a.date: raise ValueError('数据尚未更新至目标交易日')
+                # 附加位置审核，独立于已有10项指标评分，不伪造VPVR通过。
+                signals.update(assess_position(hist))
                 valid.append({'代码':code.split('.')[1],'股票':name,**signals})
             except Exception as e:
                 errors.append({'代码':code,'股票':name,'错误':str(e)})
             if ix%100==0: print(f'已处理 {ix}/{len(stocks)}, 可计算 {len(valid)}, 错误 {len(errors)}',flush=True)
             if a.pause: time.sleep(a.pause)
         if not valid: raise RuntimeError('没有成功计算的股票，请检查数据源、日期和连接')
-        frame=pd.DataFrame(valid).sort_values(['已核算项通过数','预警池','五日涨幅%'],ascending=[False,False,True])
+        frame=pd.DataFrame(valid)
+        # 新增: 早期预期差的研究优先级要压过高位候选；高位个股仍保留在全量表中。
+        grade_order={'常规位置':0, '接近52周高位':1, '数据不完整':2, '高位风险观察':3}
+        frame['_位置排序']=frame['价格位置分类'].map(grade_order).fillna(4)
+        frame=frame.sort_values(['_位置排序','已核算项通过数','预警池','五日涨幅%'], ascending=[True,False,False,True]).drop(columns=['_位置排序'])
         # 未检查监管公告者定增状态一律为“未核实”，不能写成“无定增”。
         review=BASE/'placement_review.csv'
         if review.exists():
@@ -89,23 +96,31 @@ def main():
                 verified_date=datetime.strptime(str(r['核验日期']),'%Y-%m-%d').date()
                 frame.at[i,'公告合格']=0 <= (datetime.strptime(a.date,'%Y-%m-%d').date()-verified_date).days <= 7 and bool(str(r['公告来源']).strip())
             except (ValueError,TypeError): pass
-        # 只要没有完整VPVR和当日/最新定增公告复核，都不能声称12/12或正式推荐
+        # 未完成VPVR与定增逐股核对之前，不能声明任何“可直接买入”。
         frame['可直接买入']=False
+        common=frame['价格位置分类'].eq('常规位置')
+        strong=frame['已核算项通过数']>=8
+        early=frame['预警池']
+        # 全量技术结果包括所有股票（含高位风险及数据缺口），方便审核遗漏。
         frame.to_csv(out/'全部技术结果.csv',index=False,encoding='utf-8-sig')
-        frame[frame['预警池']].to_csv(out/'提前预警池.csv',index=False,encoding='utf-8-sig')
-        frame[frame['已核算项通过数']>=8].to_csv(out/'强势候选待核验.csv',index=False,encoding='utf-8-sig')
+        frame[early & common].to_csv(out/'提前预警池.csv',index=False,encoding='utf-8-sig')
+        frame[strong & common].to_csv(out/'强势候选待核验.csv',index=False,encoding='utf-8-sig')
+        frame[(early | strong) & ~common].to_csv(out/'高位及数据不全观察池.csv',index=False,encoding='utf-8-sig')
         pd.DataFrame(errors,columns=['代码','股票','错误']).to_csv(out/'数据缺口.csv',index=False,encoding='utf-8-sig')
-        candidate = frame[(frame['预警池']) | (frame['已核算项通过数']>=8)].copy()
+        candidate=frame[early | strong].copy()
         candidate[['代码','股票','状态','核验日期','公告来源']].to_csv(out/'需核查定增清单.csv',index=False,encoding='utf-8-sig')
         with open(out/'结果说明.txt','w',encoding='utf-8') as f:
             f.write(f'扫描日期：{a.date}\n当前非科创、非ST可交易股票池：{market_universe}；本次尝试：{len(stocks)}；成功计算：{len(valid)}；数据失败：{len(errors)}\n')
             if a.limit>0:
                 f.write('注意：本次为有限样本测试，并非全A股扫描。\n')
-            f.write(f'预警池：{int(frame["预警池"].sum())}；技术8/10以上：{int((frame["已核算项通过数"]>=8).sum())}\n')
+            f.write(f'未做位置过滤的预警池：{int(early.sum())}；技术8/10以上：{int(strong.sum())}\n')
+            f.write(f'通过位置预筛的提前预警：{int((early & common).sum())}；通过位置预筛的技术8/10：{int((strong & common).sum())}\n')
+            f.write('价格位置分布：'+str(frame['价格位置分类'].value_counts().to_dict())+'\n')
+            f.write('新增位置字段只是风险预警，不参与原技术10项评分；创新高不自动判定失败。\n')
             f.write('重要：仅有10项日线可计算；VPVR两项未核实，不能形成12/12结论。\n')
             f.write('定增仅按人工核查记录显示；待核实或记录过期均不可作为正式推荐。\n')
             f.write('ST、新股、数据缺口/停牌等可能造成样本不完整；不构成买卖建议。\n')
-        print('完成：',out.resolve(),f'; 技术8/10以上：{(frame["已核算项通过数"]>=8).sum()}',flush=True)
+        print('完成：',out.resolve(),f'; 技术8/10以上：{strong.sum()}；位置合格：{(strong & common).sum()}',flush=True)
     finally:
         bs.logout()
 
