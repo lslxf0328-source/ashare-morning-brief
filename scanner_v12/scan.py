@@ -266,10 +266,10 @@ def main():
             if a.pause:
 
                 time.sleep(a.pause)
-                        if not valid:
+            if not valid:
 
-            raise RuntimeError(
-                '没有成功计算股票'
+                raise RuntimeError(
+                  '没有成功计算股票'
             )
 
 
