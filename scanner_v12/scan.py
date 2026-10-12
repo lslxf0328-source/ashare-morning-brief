@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from indicators import calc
 from position_risk import assess_position
+from placement_risk import assess_placement_risk
 
 FIELDS = 'date,code,open,high,low,close,volume,amount,tradestatus,isST'
 BASE = Path(__file__).resolve().parent
@@ -81,6 +82,7 @@ def main():
         frame=frame.sort_values(['_位置排序','已核算项通过数','预警池','五日涨幅%'], ascending=[True,False,False,True]).drop(columns=['_位置排序'])
         # 未检查监管公告者定增状态一律为“未核实”，不能写成“无定增”。
         review=BASE/'placement_review.csv'
+        frame=frame.merge(flags,on='代码',how='left')
         if review.exists():
             flags=pd.read_csv(review,dtype={'代码':str},encoding='utf-8-sig')
             if not flags.empty and {'代码','状态','核验日期','公告来源'}.issubset(flags.columns):
@@ -89,6 +91,27 @@ def main():
         if '核验日期' not in frame: frame['核验日期']=''
         if '公告来源' not in frame: frame['公告来源']=''
         frame['状态']=frame['状态'].fillna('').replace('', '待核实')
+        placement_results=[]
+
+for _,r in frame.iterrows():
+    placement_info={
+        '状态':r['状态'],
+        '公告合格':r['公告合格']
+    }
+
+    placement_results.append(
+        assess_placement_risk(placement_info)
+    )
+
+placement_df=pd.DataFrame(placement_results)
+
+frame=pd.concat(
+    [
+        frame.reset_index(drop=True),
+        placement_df.reset_index(drop=True)
+    ],
+    axis=1
+)
         frame['公告合格']=False
         for i,r in frame.iterrows():
             if r['状态']!='通过': continue
